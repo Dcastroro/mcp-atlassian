@@ -11,6 +11,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client import FastMCPTransport
 from fastmcp.exceptions import ToolError
+from mcp.types import TextContent
 from starlette.requests import Request
 
 from src.mcp_atlassian.confluence import ConfluenceFetcher
@@ -1433,6 +1434,99 @@ async def test_upload_attachment_invalid_base64(client, mock_confluence_fetcher)
                 "filename": "test-file.txt",
             },
         )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("uploaded_count", "failed_count", "expected_message"),
+    [
+        (2, 0, "Uploaded 2 attachment(s) successfully"),
+        (7, 0, "Uploaded 7 attachment(s) successfully"),
+        (5, 0, "Uploaded 5 attachment(s) successfully"),
+        (0, 2, "Uploaded 0 attachment(s); 2 failed"),
+        (1, 2, "Uploaded 1 attachment(s); 2 failed"),
+    ],
+)
+async def test_upload_attachments_summary(
+    client: Client,
+    mock_confluence_fetcher: MagicMock,
+    uploaded_count: int,
+    failed_count: int,
+    expected_message: str,
+) -> None:
+    """Summarize uploaded files and failures, not keys in the batch result."""
+    uploaded = [
+        {"filename": f"file{i}.txt", "id": f"att{i}", "size": 10}
+        for i in range(uploaded_count)
+    ]
+    failed = [
+        {"filename": f"failed{i}.txt", "error": "Upload rejected"}
+        for i in range(failed_count)
+    ]
+    results = {
+        "success": True,
+        "content_id": "123456",
+        "total": uploaded_count + failed_count,
+        "uploaded": uploaded,
+        "failed": failed,
+    }
+    mock_confluence_fetcher.upload_attachments.return_value = results
+    paths = [item["filename"] for item in uploaded + failed]
+
+    response = await client.call_tool(
+        "confluence_upload_attachments",
+        {
+            "content_id": "123456",
+            "file_paths": " , ".join(paths),
+            "comment": "Batch update",
+            "minor_edit": True,
+        },
+    )
+
+    assert len(response.content) == 1
+    content = response.content[0]
+    assert isinstance(content, TextContent)
+    result_data = json.loads(content.text)
+    assert result_data["message"] == expected_message
+    assert result_data["attachments"] == results
+    mock_confluence_fetcher.upload_attachments.assert_called_once_with(
+        content_id="123456",
+        file_paths=paths,
+        comment="Batch update",
+        minor_edit=True,
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("content_id", "file_paths", "error"),
+    [
+        ("", "file.txt", "No content ID provided"),
+        ("123456", " , ", "No file paths provided"),
+    ],
+)
+async def test_upload_attachments_summary_validation_error(
+    client: Client,
+    mock_confluence_fetcher: MagicMock,
+    content_id: str,
+    file_paths: str,
+    error: str,
+) -> None:
+    """Do not announce success when batch validation fails before uploading."""
+    results = {"success": False, "error": error}
+    mock_confluence_fetcher.upload_attachments.return_value = results
+
+    response = await client.call_tool(
+        "confluence_upload_attachments",
+        {"content_id": content_id, "file_paths": file_paths},
+    )
+
+    assert len(response.content) == 1
+    content = response.content[0]
+    assert isinstance(content, TextContent)
+    result_data = json.loads(content.text)
+    assert result_data["message"] == f"Failed to upload attachments: {error}"
+    assert result_data["attachments"] == results
 
 
 @pytest.mark.anyio

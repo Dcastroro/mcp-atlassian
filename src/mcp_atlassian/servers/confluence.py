@@ -2056,9 +2056,20 @@ async def upload_attachments(
         minor_edit=minor_edit,
     )
 
+    uploaded_count = len(results.get("uploaded", []))
+    failed_count = len(results.get("failed", []))
+    if not results.get("success"):
+        message = (
+            f"Failed to upload attachments: {results.get('error', 'Unknown error')}"
+        )
+    elif failed_count:
+        message = f"Uploaded {uploaded_count} attachment(s); {failed_count} failed"
+    else:
+        message = f"Uploaded {uploaded_count} attachment(s) successfully"
+
     return json.dumps(
         {
-            "message": f"Uploaded {len(results)} attachment(s) successfully",
+            "message": message,
             "attachments": results,
         },
         indent=2,
